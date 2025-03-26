@@ -5,9 +5,13 @@ import (
     "os"
     "syscall"
     "os/signal"
-    "golang.org/x/term" 
+    "golang.org/x/term"
     "strings"
     "sync"
+	"crypto/sha256"
+	"io"
+	"os/exec"
+	"net/mail"
 )
 
 func ClearScreen() {
@@ -79,7 +83,104 @@ func (t *TermState) GetSize() (int, int) {
 }
 
 func main() {
-// Ensure terminal state is restored on exit
+
+	// Parse CLI args
+	subcommand := ""
+	i := 1
+	var file string
+
+	for i < len(os.Args) {
+		arg := os.Args[i]
+		i++
+
+		if arg == "-h" || arg == "--help" {
+			fmt.Println("Usage: memail [subcommand]")
+			os.Exit(0)
+		} else if arg == "upload" {
+			// Check that there is a single file argument to upload
+			if i >= len(os.Args) {
+				fmt.Println("Error: upload subcommand requires a file argument")
+				os.Exit(1)
+			} else if i < len(os.Args) - 1 {
+				fmt.Println("Error: upload subcommand only accepts a single file argument")
+				os.Exit(1)
+			}
+
+			subcommand = "upload"
+			file = os.Args[i]
+		}
+	}
+
+
+	if subcommand == "upload" {
+		// Upload the file using b2-linux CLI
+		// b2-linux upload-file <bucketName> <localFilePath> <b2FileName>
+
+		// Get bucket name from MEMAIL_BUCKET env var
+		bucketName, ok := os.LookupEnv("MEMAIL_BUCKET")
+		if !ok {
+			fmt.Println("Error: MEMAIL_BUCKET environment variable not set")
+			os.Exit(1)
+		}
+
+		// Get the SHA-256 hash of the file
+		file, err := os.Open(file)
+		if err != nil {
+			fmt.Println("Error: could not open file")
+			os.Exit(1)
+		}
+
+		hash := sha256.New()
+		if _, err := io.Copy(hash, file); err != nil {
+			fmt.Println("Error: could not hash file")
+			os.Exit(1)
+		}
+
+		checksum := hash.Sum(nil)
+
+		// Reset the file pointer to the beginning
+		file.Seek(0, 0)
+
+		// Parse the file as an email as a test
+		_, err = mail.ReadMessage(file)
+		if err != nil {
+			fmt.Println("Error: could not parse file as email")
+			os.Exit(1)
+		}
+
+		// Upload the file with the checksum as the name, .eml extension
+		b2Cmd := exec.Command("b2", "upload-file", bucketName, file.Name(), fmt.Sprintf("%x.eml", checksum))
+
+		app_key_id, ok := os.LookupEnv("MEMAIL_APP_KEY_ID")
+		if !ok {
+			fmt.Println("Error: MEMAIL_APP_KEY_ID environment variable not set")
+			os.Exit(1)
+		}
+
+		app_key, ok := os.LookupEnv("MEMAIL_APP_KEY")
+		if !ok {
+			fmt.Println("Error: MEMAIL_APP_KEY environment variable not set")
+			os.Exit(1)
+		}
+
+		// Set the B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY environment variables, using the MEMAIL_APP_KEY_ID and MEMAIL_APP_KEY values
+		b2Cmd.Env = append(b2Cmd.Env, fmt.Sprintf("B2_APPLICATION_KEY_ID=%s", app_key_id))
+		b2Cmd.Env = append(b2Cmd.Env, fmt.Sprintf("B2_APPLICATION_KEY=%s", app_key))
+
+		b2Cmd.Stdout = os.Stdout
+		b2Cmd.Stderr = os.Stderr
+
+		err = b2Cmd.Run()
+		if err != nil {
+			fmt.Println("Error: could not upload file")
+			os.Exit(1)
+		}
+
+		os.Exit(0)
+	}
+
+
+	// Ensure terminal state is restored on exit
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
