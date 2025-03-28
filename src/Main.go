@@ -12,6 +12,10 @@ import (
 	"io"
 	"os/exec"
 	"net/mail"
+	"mime/multipart"
+	"mime"
+	"encoding/base64"
+	"bytes"
 )
 
 func ClearScreen() {
@@ -94,7 +98,7 @@ func main() {
 		i++
 
 		if arg == "-h" || arg == "--help" {
-			fmt.Println("Usage: memail [subcommand]")
+			fmt.Println("Usage: memail [upload <file> | parse <file>]")
 			os.Exit(0)
 		} else if arg == "upload" {
 			// Check that there is a single file argument to upload
@@ -107,6 +111,18 @@ func main() {
 			}
 
 			subcommand = "upload"
+			file = os.Args[i]
+		} else if arg == "parse" {
+			// Check that there is a single file argument to parse
+			if i >= len(os.Args) {
+				fmt.Println("Error: parse subcommand requires a file argument")
+				os.Exit(1)
+			} else if i < len(os.Args) - 1 {
+				fmt.Println("Error: parse subcommand only accepts a single file argument")
+				os.Exit(1)
+			}
+
+			subcommand = "parse"
 			file = os.Args[i]
 		}
 	}
@@ -174,6 +190,99 @@ func main() {
 		if err != nil {
 			fmt.Println("Error: could not upload file")
 			os.Exit(1)
+		}
+
+		os.Exit(0)
+	} else if subcommand == "parse" {
+		// Parse the file as an email
+		file, err := os.Open(file)
+		if err != nil {
+			fmt.Println("Error: could not open file")
+			os.Exit(1)
+		}
+
+		message, err := mail.ReadMessage(file)
+		if err != nil {
+			fmt.Println("Error: could not parse file as email")
+			os.Exit(1)
+		}
+
+		from := message.Header.Get("From")
+		to := message.Header.Get("To")
+		subject := message.Header.Get("Subject")
+		dateTime := message.Header.Get("Date")
+		contentType := message.Header.Get("Content-Type")
+
+		fmt.Printf("From: %s\n", from)
+		fmt.Printf("To: %s\n", to)
+		fmt.Printf("Subject: %s\n", subject)
+		fmt.Printf("Date: %s\n", dateTime)
+		fmt.Printf("Content-Type: %s\n", contentType)
+		mimetype, params, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			fmt.Println("Error: could not parse media type")
+			os.Exit(1)
+		}
+
+		if mimetype == "multipart/alternative" {
+			mr := multipart.NewReader(message.Body, params["boundary"])
+			for {
+				p, err := mr.NextPart()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					fmt.Println("Error: could not read part")
+					os.Exit(1)
+				}
+
+				// If we find a text/plain part, print it
+				contentType := p.Header.Get("Content-Type")
+				altMimeType, _, err := mime.ParseMediaType(contentType)
+				if err != nil {
+					fmt.Println("Error: could not parse media type")
+					os.Exit(1)
+				}
+
+				if altMimeType == "text/plain" {
+					body, err := io.ReadAll(p)
+					if err != nil {
+						fmt.Println("Error: could not read body")
+						os.Exit(1)
+					}
+
+					encoding := p.Header.Get("Content-Transfer-Encoding")
+					// Decode the body if it is base64 encoded
+					if encoding == "base64" {
+						reader := base64.NewDecoder(base64.StdEncoding, bytes.NewReader(body))
+						decoded, err := io.ReadAll(reader)
+						if err != nil {
+							fmt.Println("Error: could not decode body")
+							os.Exit(1)
+						}
+
+						fmt.Printf("%s\n", decoded)
+						// Future: Check charset
+						// charset, ok := altParams["charset"]
+						// if ok {
+							// if strings.ToLower(charset) == "utf-8" {
+
+							// }
+						// } else {
+							// fmt.Printf("%s\n", decoded)
+						// }
+					} else {
+						fmt.Printf("%s\n", body)
+					}
+				} else {
+					fmt.Printf("Did not print part: %s\n", contentType)
+				}
+				// fmt.Printf("Part: %s\n", p.Header.Get("Content-Type"))
+			}
+		} else if contentType == "text/plain" {
+			fmt.Printf("Body: %s\n", message.Body)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: unsupported content type: %s\n", contentType)
 		}
 
 		os.Exit(0)
