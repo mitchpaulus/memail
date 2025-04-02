@@ -224,7 +224,10 @@ func main() {
 			os.Exit(1)
 		}
 
+		fmt.Fprintf(os.Stderr, "Handling mime type: %s\n", mimetype)
 		if mimetype == "multipart/alternative" {
+			HandleMultiPartAlterative(message.Body, params["boundary"])
+		} else if mimetype == "multipart/related" {
 			mr := multipart.NewReader(message.Body, params["boundary"])
 			for {
 				p, err := mr.NextPart()
@@ -232,55 +235,32 @@ func main() {
 					break
 				}
 				if err != nil {
-					fmt.Println("Error: could not read part")
+					fmt.Println("Error: could not read part %s\n", err)
 					os.Exit(1)
 				}
 
 				// If we find a text/plain part, print it
 				contentType := p.Header.Get("Content-Type")
-				altMimeType, _, err := mime.ParseMediaType(contentType)
+				altMimeType, altParams, err := mime.ParseMediaType(contentType)
 				if err != nil {
 					fmt.Println("Error: could not parse media type")
 					os.Exit(1)
 				}
 
+				fmt.Fprintf(os.Stderr, "Handling alt mime type: %s\n", altMimeType)
+
 				if altMimeType == "text/plain" {
-					body, err := io.ReadAll(p)
-					if err != nil {
-						fmt.Println("Error: could not read body")
-						os.Exit(1)
-					}
-
-					encoding := p.Header.Get("Content-Transfer-Encoding")
-					// Decode the body if it is base64 encoded
-					if encoding == "base64" {
-						reader := base64.NewDecoder(base64.StdEncoding, bytes.NewReader(body))
-						decoded, err := io.ReadAll(reader)
-						if err != nil {
-							fmt.Println("Error: could not decode body")
-							os.Exit(1)
-						}
-
-						fmt.Printf("%s\n", decoded)
-						// Future: Check charset
-						// charset, ok := altParams["charset"]
-						// if ok {
-							// if strings.ToLower(charset) == "utf-8" {
-
-							// }
-						// } else {
-							// fmt.Printf("%s\n", decoded)
-						// }
-					} else {
-						fmt.Printf("%s\n", body)
-					}
+					HandleTextPlain(p, p.Header.Get("Content-Transfer-Encoding"))
+				} else if altMimeType == "multipart/alternative" {
+					boundary := altParams["boundary"]
+					HandleMultiPartAlterative(p, boundary)
 				} else {
 					fmt.Printf("Did not print part: %s\n", contentType)
 				}
 				// fmt.Printf("Part: %s\n", p.Header.Get("Content-Type"))
 			}
 		} else if contentType == "text/plain" {
-			fmt.Printf("Body: %s\n", message.Body)
+			HandleTextPlain(message.Body, message.Header.Get("Content-Transfer-Encoding"))
 		} else {
 			fmt.Fprintf(os.Stderr, "Error: unsupported content type: %s\n", contentType)
 		}
@@ -373,4 +353,64 @@ func main() {
             PrintLine(message)
         }
     }
+}
+
+func HandleTextPlain(reader io.Reader, contentTransferEncoding string) {
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		fmt.Println("Error: could not read body")
+		os.Exit(1)
+	}
+
+	// Decode the body if it is base64 encoded
+	if contentTransferEncoding == "base64" {
+		reader := base64.NewDecoder(base64.StdEncoding, bytes.NewReader(body))
+		decoded, err := io.ReadAll(reader)
+		if err != nil {
+			fmt.Println("Error: could not decode body")
+			os.Exit(1)
+		}
+
+		fmt.Printf("%s\n", decoded)
+		// Future: Check charset
+		// charset, ok := altParams["charset"]
+		// if ok {
+		// if strings.ToLower(charset) == "utf-8" {
+
+		// }
+		// } else {
+		// fmt.Printf("%s\n", decoded)
+		// }
+	} else {
+		fmt.Printf("%s\n", body)
+	}
+}
+
+func HandleMultiPartAlterative(body io.Reader, boundary string) {
+	mr := multipart.NewReader(body, boundary)
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Println("Error: could not read part")
+			os.Exit(1)
+		}
+
+		// If we find a text/plain part, print it
+		contentType := p.Header.Get("Content-Type")
+		altMimeType, _, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			fmt.Println("Error: could not parse media type")
+			os.Exit(1)
+		}
+
+		if altMimeType == "text/plain" {
+			HandleTextPlain(p, p.Header.Get("Content-Transfer-Encoding"))
+		} else {
+			fmt.Printf("Did not print part: %s\n", contentType)
+		}
+		// fmt.Printf("Part: %s\n", p.Header.Get("Content-Type"))
+	}
 }
