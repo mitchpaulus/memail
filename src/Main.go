@@ -16,6 +16,7 @@ import (
 	"mime"
 	"encoding/base64"
 	"bytes"
+	"golang.org/x/text/encoding/charmap"
 )
 
 func ClearScreen() {
@@ -84,6 +85,10 @@ func (t *TermState) GetSize() (int, int) {
     t.mu.Lock()
     defer t.mu.Unlock()
     return t.Rows, t.Cols
+}
+
+type GenericHeader interface {
+	Get(key string) string
 }
 
 func main() {
@@ -218,53 +223,9 @@ func main() {
 		fmt.Printf("Subject: %s\n", subject)
 		fmt.Printf("Date: %s\n", dateTime)
 		fmt.Printf("Content-Type: %s\n", contentType)
-		mimetype, params, err := mime.ParseMediaType(contentType)
-		if err != nil {
-			fmt.Println("Error: could not parse media type")
-			os.Exit(1)
-		}
+		fmt.Printf("\n")
 
-		fmt.Fprintf(os.Stderr, "Handling mime type: %s\n", mimetype)
-		if mimetype == "multipart/alternative" {
-			HandleMultiPartAlterative(message.Body, params["boundary"])
-		} else if mimetype == "multipart/related" {
-			mr := multipart.NewReader(message.Body, params["boundary"])
-			for {
-				p, err := mr.NextPart()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					fmt.Println("Error: could not read part %s\n", err)
-					os.Exit(1)
-				}
-
-				// If we find a text/plain part, print it
-				contentType := p.Header.Get("Content-Type")
-				altMimeType, altParams, err := mime.ParseMediaType(contentType)
-				if err != nil {
-					fmt.Println("Error: could not parse media type")
-					os.Exit(1)
-				}
-
-				fmt.Fprintf(os.Stderr, "Handling alt mime type: %s\n", altMimeType)
-
-				if altMimeType == "text/plain" {
-					HandleTextPlain(p, p.Header.Get("Content-Transfer-Encoding"))
-				} else if altMimeType == "multipart/alternative" {
-					boundary := altParams["boundary"]
-					HandleMultiPartAlterative(p, boundary)
-				} else {
-					fmt.Printf("Did not print part: %s\n", contentType)
-				}
-				// fmt.Printf("Part: %s\n", p.Header.Get("Content-Type"))
-			}
-		} else if contentType == "text/plain" {
-			HandleTextPlain(message.Body, message.Header.Get("Content-Transfer-Encoding"))
-		} else {
-			fmt.Fprintf(os.Stderr, "Error: unsupported content type: %s\n", contentType)
-		}
-
+		HandleContent(message.Body, message.Header)
 		os.Exit(0)
 	}
 
@@ -355,7 +316,32 @@ func main() {
     }
 }
 
-func HandleTextPlain(reader io.Reader, contentTransferEncoding string) {
+func HandleContent(reader io.Reader, header GenericHeader) {
+	contentType := header.Get("Content-Type")
+	mimetype, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		fmt.Println("Error: could not parse media type")
+		os.Exit(1)
+	}
+
+	// fmt.Fprintf(os.Stderr, "Handling mime type: %s\n", mimetype)
+	if mimetype == "multipart/alternative" {
+		// HandleMultiPartAlterative(reader, params["boundary"])
+		HandleMultiPart(reader, params["boundary"])
+	} else if mimetype == "multipart/related" {
+		HandleMultiPart(reader, params["boundary"])
+	} else if mimetype == "text/plain" {
+		encoding := header.Get("Content-Transfer-Encoding")
+		HandleTextPlain(reader, encoding, header)
+	} else if mimetype == "multipart/mixed" {
+		boundary := params["boundary"]
+		HandleMultiPart(reader, boundary)
+	} else {
+		fmt.Fprintf(os.Stdout, "Error: unsupported content type: %s\n", contentType)
+	}
+}
+
+func HandleTextPlain(reader io.Reader, contentTransferEncoding string, genericHeader GenericHeader) {
 	body, err := io.ReadAll(reader)
 	if err != nil {
 		fmt.Println("Error: could not read body")
@@ -382,11 +368,41 @@ func HandleTextPlain(reader io.Reader, contentTransferEncoding string) {
 		// fmt.Printf("%s\n", decoded)
 		// }
 	} else {
-		fmt.Printf("%s\n", body)
+
+		// Check the charset
+		contentType := genericHeader.Get("Content-Type")
+		_, params, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			fmt.Println("Error: could not parse content type")
+			os.Exit(1)
+		}
+
+		charset, ok := params["charset"]
+		if ok {
+			if strings.ToLower(charset) == "utf-8" {
+				// Print the body as is
+				fmt.Printf("%s\n", body)
+			} else if strings.ToLower(charset) == "windows-1256" {
+				// Convert the body to UTF-8
+				decoder := charmap.Windows1256.NewDecoder()
+				decoded, err := decoder.String(string(body))
+				if err != nil {
+					fmt.Println("Error: could not decode body")
+					os.Exit(1)
+				}
+
+				fmt.Printf("%s\n", decoded)
+			} else {
+				fmt.Printf("Error: unsupported charset: %s\n", charset)
+			}
+		} else {
+			// Print the body as is
+			fmt.Printf("%s\n", body)
+		}
 	}
 }
 
-func HandleMultiPartAlterative(body io.Reader, boundary string) {
+func HandleMultiPart(body io.Reader, boundary string) {
 	mr := multipart.NewReader(body, boundary)
 	for {
 		p, err := mr.NextPart()
@@ -398,19 +414,42 @@ func HandleMultiPartAlterative(body io.Reader, boundary string) {
 			os.Exit(1)
 		}
 
-		// If we find a text/plain part, print it
-		contentType := p.Header.Get("Content-Type")
-		altMimeType, _, err := mime.ParseMediaType(contentType)
-		if err != nil {
-			fmt.Println("Error: could not parse media type")
-			os.Exit(1)
-		}
+		contentDisposition := p.Header.Get("Content-Disposition")
+		if contentDisposition != "" {
+			// Check for attachment
+			dispositionType, params, err := mime.ParseMediaType(contentDisposition)
+			if err != nil {
+				fmt.Println("Error: could not parse content disposition")
+				os.Exit(1)
+			}
+			if dispositionType == "attachment" {
+				filename, ok := params["filename"]
+				if !ok {
+					fmt.Println("Error: could not find filename in content disposition")
+					os.Exit(1)
+				}
 
-		if altMimeType == "text/plain" {
-			HandleTextPlain(p, p.Header.Get("Content-Transfer-Encoding"))
+				contentType := p.Header.Get("Content-Type")
+				// Check for content type
+
+
+				fmt.Printf("Attachment: %s; %s\n", filename, contentType)
+				// Save the attachment to a file
+				// outFile, err := os.Create(filename)
+				// if err != nil {
+					// fmt.Println("Error: could not create file")
+					// os.Exit(1)
+				// }
+				// defer outFile.Close()
+
+				// _, err = io.Copy(outFile, p)
+				// if err != nil {
+					// fmt.Println("Error: could not save attachment")
+					// os.Exit(1)
+				// }
+			}
 		} else {
-			fmt.Printf("Did not print part: %s\n", contentType)
+			HandleContent(p, p.Header)
 		}
-		// fmt.Printf("Part: %s\n", p.Header.Get("Content-Type"))
 	}
 }
