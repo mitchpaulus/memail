@@ -379,7 +379,7 @@ func HandleTextPlain(reader io.Reader, contentTransferEncoding string, genericHe
 
 		charset, ok := params["charset"]
 		if ok {
-			if strings.ToLower(charset) == "utf-8" {
+			if strings.ToLower(charset) == "utf-8" || strings.ToLower(charset) == "us-ascii" {
 				// Print the body as is
 				fmt.Printf("%s\n", body)
 			} else if strings.ToLower(charset) == "windows-1256" {
@@ -391,6 +391,14 @@ func HandleTextPlain(reader io.Reader, contentTransferEncoding string, genericHe
 					os.Exit(1)
 				}
 
+				fmt.Printf("%s\n", decoded)
+			} else if strings.ToLower(charset) == "windows-1252" {
+				decoder := charmap.Windows1252.NewDecoder()
+				decoded, err := decoder.String(string(body))
+				if err != nil {
+					fmt.Println("Error: could not decode body")
+					os.Exit(1)
+				}
 				fmt.Printf("%s\n", decoded)
 			} else {
 				fmt.Printf("Error: unsupported charset: %s\n", charset)
